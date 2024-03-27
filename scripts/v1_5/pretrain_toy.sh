@@ -1,6 +1,6 @@
 #!/bin/bash
 
-deepspeed llava/train/train_mem.py \
+deepspeed exp-llava/train/train_mem.py \
     --deepspeed ./scripts/zero2.json \
     --model_name_or_path lmsys/vicuna-7b-v1.5 \
     --version plain \
@@ -13,7 +13,7 @@ deepspeed llava/train/train_mem.py \
     --mm_use_im_start_end False \
     --mm_use_im_patch_token False \
     --bf16 True \
-    --output_dir ./checkpoints/llava-v1.5-7b-pretrain-toy \
+    --output_dir ./checkpoints/exp-llava-v1.5-7b-pretrain-toy \
     --num_train_epochs 1 \
     --max_steps 32 \
     --per_device_train_batch_size 8 \
@@ -34,4 +34,4 @@ deepspeed llava/train/train_mem.py \
     --dataloader_num_workers 4 \
     --lazy_preprocess True \
     --report_to wandb \
-    --run_name 'LLaVA-v1.5-7b-pretrain-toy'
+    --run_name 'exp-LLaVA-v1.5-7b-pretrain-toy'

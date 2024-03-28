@@ -1,6 +1,6 @@
 #!/bin/bash
 
-deepspeed exp-llava/train/train_mem.py \
+deepspeed llava/train/train_mem.py \
     --deepspeed ./scripts/zero3.json \
     --model_name_or_path lmsys/vicuna-7b-v1.5 \
     --version v1 \
@@ -8,7 +8,10 @@ deepspeed exp-llava/train/train_mem.py \
     --image_folder ./playground/data \
     --vision_tower openai/clip-vit-large-patch14-336 \
     --pretrain_mm_mlp_adapter ./checkpoints/exp-llava-v1.5-7b-pretrain/mm_projector.bin \
-    --mm_projector_type mlp2x_gelu \
+    --pretrain_dino_mm_mlp_adapter ./checkpoints/exp-llava-v1.5-7b-pretrain/dino_mm_projector.bin \
+    --pretrain_ocr_mm_mlp_adapter ./checkpoints/exp-llava-v1.5-7b-pretrain/ocr_mm_projector.bin \
+    --pretrain_fusion_mm_mlp_adapter ./checkpoints/exp-llava-v1.5-7b-pretrain/fusion_mm_projector.bin \
+    --mm_projector_type linear \
     --mm_vision_select_layer -2 \
     --mm_use_im_start_end False \
     --mm_use_im_patch_token False \

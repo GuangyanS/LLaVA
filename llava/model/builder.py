@@ -157,6 +157,17 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             vision_tower.load_model(device_map=device_map)
         if device_map != 'auto':
             vision_tower.to(device=device_map, dtype=torch.float16)
+        
+        dino_vision_tower = model.get_dino_vision_tower()
+        if not dino_vision_tower.is_loaded:
+            dino_vision_tower.load_model()
+        dino_vision_tower.to(device=device_map, dtype=torch.float16)
+        
+        ocr_vision_tower = model.get_ocr_vision_tower()
+        if not ocr_vision_tower.is_loaded:
+            ocr_vision_tower.load_model()
+        ocr_vision_tower.to(device=device_map, dtype=torch.float16)
+        
         image_processor = vision_tower.image_processor
 
     if hasattr(model.config, "max_sequence_length"):

@@ -30,11 +30,19 @@ class SimpleResBlock(nn.Module):
         return x + self.proj(x)
 
 
-def build_vision_projector(config, delay_load=False, **kwargs):
+def build_vision_projector(config, load_model='clip', m=1, delay_load=False, **kwargs):
     projector_type = getattr(config, 'mm_projector_type', 'linear')
 
     if projector_type == 'linear':
-        return nn.Linear(config.mm_hidden_size, config.hidden_size)
+        if load_model == 'clip':
+            return nn.Linear(config.mm_hidden_size * m, config.hidden_size)
+        elif load_model == 'dino':
+            #HACK to match DINO-G's hidden size
+            return nn.Linear(1536 * m, config.hidden_size)
+        elif load_model == 'ocr':
+            return nn.Linear(1024 * m, config.hidden_size)
+        elif load_model == 'fusion':
+            return nn.Linear(config.hidden_size, config.hidden_size)
 
     mlp_gelu_match = re.match(r'^mlp(\d+)x_gelu$', projector_type)
     if mlp_gelu_match:

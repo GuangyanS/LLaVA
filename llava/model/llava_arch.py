@@ -17,6 +17,7 @@ from abc import ABC, abstractmethod
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .multimodal_encoder.builder import build_vision_tower
 from .multimodal_projector.builder import build_vision_projector
@@ -222,8 +223,10 @@ class LlavaMetaForCausalLM(ABC):
         image_features = self.get_model().mm_projector(image_features)
         return image_features
     
-    def encode_images_withclip(self, images):
+    def encode_images_withclip(self, images, m = 1):
         image_features_clip = self.get_model().get_vision_tower(load_model = "clip")(images)
+        bs, num_patches, dim = image_features_clip.shape
+        image_features_clip = image_features_clip.view(bs, num_patches // m, -1)
         image_features_clip = self.get_model().mm_projector(image_features_clip)
         return image_features_clip
     
@@ -241,6 +244,15 @@ class LlavaMetaForCausalLM(ABC):
         image_features_ocr = image_features_ocr.view(bs, num_patches // m, -1)
         image_features_ocr = self.get_model().ocr_mm_projector(image_features_ocr)
         return image_features_ocr    
+    
+    def encode_images_withexp(self, images, m = [1,2,2]):
+        image_features_clip = self.encode_images_withclip(images, m = m[0])
+        image_features_dino = self.encode_images_withdino(images, m = m[1])
+        image_features_ocr = self.encode_images_withocr(images, m = m[2])
+        image_features = torch.cat([image_features_ocr, image_features_dino, image_features_clip], dim=1)
+        image_features = F.gelu(image_features)
+        image_features = self.get_model().fusion_mm_projector(image_features)
+        return image_features
 
     def prepare_inputs_labels_for_multimodal_dino_ocr(
         self, input_ids, position_ids, attention_mask, past_key_values, labels,
@@ -300,10 +312,8 @@ class LlavaMetaForCausalLM(ABC):
                 raise ValueError(f"Unexpected mm_patch_merge_type: {self.config.mm_patch_merge_type}")
         else:
             # image_features = self.encode_images(images)
-            image_features_clip = self.encode_images_withclip(images)
-            image_features_dino = self.encode_images_withdino(images)
-            image_features_ocr = self.encode_images_withocr(images)
-            image_features = torch.cat([image_features_ocr, image_features_dino, image_features_clip], dim=1)
+            image_features = self.encode_images_withexp(images)
+            
 
         # TODO: image start / end is not implemented here to support pretraining.
         if getattr(self.config, 'tune_mm_mlp_adapter', False) and getattr(self.config, 'mm_use_im_start_end', False):

@@ -1,13 +1,6 @@
-GPU=$[$WORLD_SIZE * 8]
-echo GPU=${GPU}
-echo WORLD_SIZE=$WORLD_SIZE
-echo RANK=$RANK
-echo MASTER_ADDR=$MASTER_ADDR
-echo MASTER_PORT=$MASTER_PORT
-
-WANDB_MODE=offline deepspeed llava/train/train_mem_CoS.py \
+deepspeed llava/train/train_mem_CoS.py \
     --deepspeed ./scripts/zero3.json \
-    --model_name_or_path ./checkpoints/exp-llava-v1.5-7b \
+    --model_name_or_path lmsys/vicuna-7b-v1.5 \
     --version v1 \
     --data_path ./playground/data/llava_v1_5_mix665k.json \
     --cos_data_path /PATH/TO/YOUR/DATA \
@@ -31,7 +24,7 @@ WANDB_MODE=offline deepspeed llava/train/train_mem_CoS.py \
     --gradient_accumulation_steps 1 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
-    --save_steps 50000 \
+    --save_steps 4 \
     --save_total_limit 1 \
     --learning_rate 2e-5 \
     --weight_decay 0. \

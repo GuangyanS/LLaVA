@@ -105,6 +105,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                 past_key_values,
                 labels,
                 images,
+                images_crop,
                 image_sizes
             )
 

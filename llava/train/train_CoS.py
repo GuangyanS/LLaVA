@@ -64,6 +64,7 @@ class ModelArguments:
     mm_vision_select_feature: Optional[str] = field(default="patch")
     mm_vision_load_path: Optional[str] = field(default=None)
     mm_vision_load_qformer: bool = field(default=False)
+    mm_patch_merge_type: Optional[str] = field(default='flat')
 
 @dataclass
 class DataArguments:

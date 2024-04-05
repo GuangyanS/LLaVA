@@ -6,7 +6,7 @@ deepspeed llava/train/train_mem_CoS.py \
     --cos_data_path /PATH/TO/YOUR/DATA \
     --image_folder ./playground/data \
     --vision_tower openai/clip-vit-large-patch14-336 \
-    --pretrain_mm_mlp_adapter ./checkpoints/exp-llava-v1.5-7b/mm_projector.bin \
+    --pretrain_mm_mlp_adapter ./checkpoints/exp-llava-v1.5-7b-pretrain/mm_projector.bin \
     --pretrain_dino_mm_mlp_adapter ./checkpoints/exp-llava-v1.5-7b-pretrain/dino_mm_projector.bin \
     --pretrain_ocr_mm_mlp_adapter ./checkpoints/exp-llava-v1.5-7b-pretrain/ocr_mm_projector.bin \
     --pretrain_fusion_mm_mlp_adapter ./checkpoints/exp-llava-v1.5-7b-pretrain/fusion_mm_projector.bin \

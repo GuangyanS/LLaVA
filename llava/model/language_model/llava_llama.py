@@ -87,6 +87,10 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             #     images,
             #     image_sizes
             # )
+            # HACK for multi image
+            if images is not None and images.shape[1] > 3:
+                # print("You are using LLaVA-CoS")
+                images, images_crop = torch.chunk(images, 2, dim=1)
             (
                 input_ids,
                 position_ids,

@@ -148,18 +148,18 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             #     image_sizes
             # )
             (
-                input_ids,
+                inputs,
                 position_ids,
                 attention_mask,
                 past_key_values,
                 inputs_embeds,
                 labels
             ) = self.prepare_inputs_labels_for_multimodal_dino_ocr(
-                input_ids,
+                inputs,
                 position_ids,
                 attention_mask,
-                past_key_values,
-                labels,
+                None,
+                None,
                 images,
                 image_sizes
             )

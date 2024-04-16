@@ -1,16 +1,11 @@
 import os
 import torch
-import torch.nn as nn
 
 from torch.utils.data import Sampler
 
 from transformers import Trainer
 from transformers.trainer import (
-    is_sagemaker_mp_enabled,
-    get_parameter_names,
     has_length,
-    ALL_LAYERNORM_LAYERS,
-    logger,
 )
 from typing import List, Optional
 
@@ -60,11 +55,11 @@ def split_to_even_chunks(indices, lengths, num_chunks):
 def get_modality_length_grouped_indices(lengths, batch_size, world_size, generator=None):
     # We need to use torch for the random part as a distributed sampler will set the random seed for torch.
     assert all(l != 0 for l in lengths), "Should not have zero length."
-    if all(l > 0 for l in lengths) or all(l < 0 for l in lengths):
-        # all samples are in the same modality
-        return get_length_grouped_indices(lengths, batch_size, world_size, generator=generator)
     mm_indices, mm_lengths = zip(*[(i, l) for i, l in enumerate(lengths) if l > 0])
     lang_indices, lang_lengths = zip(*[(i, -l) for i, l in enumerate(lengths) if l < 0])
+
+    assert len(mm_indices) > 0, "Should have at least one multimodal sample."
+    assert len(lang_indices) > 0, "Should have at least one language sample."
 
     mm_shuffle = [mm_indices[i] for i in get_length_grouped_indices(mm_lengths, batch_size, world_size, generator=None)]
     lang_shuffle = [lang_indices[i] for i in get_length_grouped_indices(lang_lengths, batch_size, world_size, generator=None)]
@@ -79,8 +74,12 @@ def get_modality_length_grouped_indices(lengths, batch_size, world_size, generat
     megabatch_indices = torch.randperm(len(megabatches), generator=generator)
     megabatches = [megabatches[i] for i in megabatch_indices]
 
+    if len(additional_batch) >= megabatch_size:
+        megabatches = [additional_batch[:megabatch_size]] + megabatches
+        additional_batch = additional_batch[megabatch_size:]
+
     if len(additional_batch) > 0:
-        megabatches.append(sorted(additional_batch))
+        megabatches.append(additional_batch)
 
     return [i for megabatch in megabatches for i in megabatch]
 
@@ -139,8 +138,9 @@ class LLaVATrainer(Trainer):
         if self.args.group_by_modality_length:
             lengths = self.train_dataset.modality_lengths
             return LengthGroupedSampler(
+                # self.args.train_batch_size * self.args.gradient_accumulation_steps, # TODO: seems that we should not have gradient_accumulation_steps
                 self.args.train_batch_size,
-                world_size=self.args.world_size * self.args.gradient_accumulation_steps,
+                world_size=self.args.world_size,
                 lengths=lengths,
                 group_by_modality=True,
             )
@@ -226,7 +226,7 @@ class LLaVATrainer(Trainer):
                 logger.info(f"skipped: {skipped/2**20}M params")
 
         return self.optimizer
-
+    
     def _save_checkpoint(self, model, trial, metrics=None):
         if getattr(self.args, 'tune_mm_mlp_adapter', False):
             from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR

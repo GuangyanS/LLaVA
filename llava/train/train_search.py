@@ -21,8 +21,10 @@ import json
 import logging
 import pathlib
 from typing import Dict, Optional, Sequence, List
+import numpy as np
 
 import torch
+
 
 import transformers
 
@@ -30,9 +32,11 @@ from llava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
 from torch.utils.data import Dataset
 from llava.train.llava_trainer import LLaVATrainer
 
-import LLaVA.llava.conversation as conversation_lib
+from llava import conversation as conversation_lib
 from llava.model import *
 from llava.mm_utils import tokenizer_image_token, tokenizer_image_object_token
+
+from llava.utils import get_patch
 
 from PIL import Image
 
@@ -54,7 +58,9 @@ class ModelArguments:
 	vision_tower: Optional[str] = field(default=None)
 	mm_vision_select_layer: Optional[int] = field(default=-1)   # default to the last layer
 	pretrain_mm_mlp_adapter: Optional[str] = field(default=None)
+	pretrain_mm_perceiver_adapter: Optional[str] = field(default=None)
 	mm_projector_type: Optional[str] = field(default='linear')
+	object_mm_projector_type: Optional[str] = field(default='perceiver')
 	mm_use_im_start_end: bool = field(default=False)
 	mm_use_im_patch_token: bool = field(default=True)
 	mm_vision_select_feature: Optional[str] = field(default="patch")
@@ -103,6 +109,7 @@ class TrainingArguments(transformers.TrainingArguments):
 	lora_dropout: float = 0.05
 	lora_weight_path: str = ""
 	lora_bias: str = "none"
+	mm_projector_lr: Optional[float] = None
 	group_by_modality_length: bool = field(default=False)
 
 
@@ -142,7 +149,7 @@ def get_peft_state_maybe_zero_3(named_params, bias):
 				to_return[bias_name] = t
 	else:
 		raise NotImplementedError
-	to_return = {k: maybe_zero_3(v, ignore_status=True) for k, v in to_return.items()}
+	to_return = {k: maybe_zero_3(v, name=k) for k, v in to_return.items()}
 	return to_return
 
 
@@ -299,9 +306,17 @@ def _add_speaker_and_signal(header, source, get_conversation=True):
 	return conversation
 
 
+def replace_nth(sub,repl,txt,nth):
+	arr=txt.split(sub)
+	part1=sub.join(arr[:nth])
+	part2=sub.join(arr[nth:])
+	
+	return part1+repl+part2
+
 def preprocess_multimodal(
 	sources: Sequence[str],
-	data_args: DataArguments
+	data_args: DataArguments,
+	object_str_list=None
 ) -> Dict:
 	is_multimodal = data_args.is_multimodal
 	if not is_multimodal:
@@ -320,12 +335,19 @@ def preprocess_multimodal(
 				replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
 			sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
 
+			if DEFAULT_OBJECT_TOKEN in sentence["value"]:
+				num = sentence["value"].count(DEFAULT_OBJECT_TOKEN)
+				for i in range(num):
+					sentence["value"] = replace_nth(DEFAULT_OBJECT_TOKEN, object_str_list[i], sentence["value"], i+1)
+
 	return sources
+
 
 def preprocess_llama_2(
 	sources,
 	tokenizer: transformers.PreTrainedTokenizer,
-	has_image: bool = False
+	has_image: bool = False,
+	has_object: bool = False
 ) -> Dict:
 	conv = conversation_lib.default_conversation.copy()
 	roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
@@ -347,7 +369,10 @@ def preprocess_llama_2(
 	# Tokenize conversations
 
 	if has_image:
-		input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+		if has_object:
+			input_ids = torch.stack([tokenizer_image_object_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+		else:
+			input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
 	else:
 		input_ids = tokenizer(
 			conversations,
@@ -379,8 +404,12 @@ def preprocess_llama_2(
 			parts[0] += sep
 
 			if has_image:
-				round_len = len(tokenizer_image_token(rou, tokenizer))
-				instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
+				if has_object:
+					round_len = len(tokenizer_image_object_token(rou, tokenizer))
+					instruction_len = len(tokenizer_image_object_token(parts[0], tokenizer)) - 2
+				else:
+					round_len = len(tokenizer_image_token(rou, tokenizer))
+					instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
 			else:
 				round_len = len(tokenizer(rou).input_ids)
 				instruction_len = len(tokenizer(parts[0]).input_ids) - 2
@@ -407,7 +436,8 @@ def preprocess_llama_2(
 def preprocess_v1(
 	sources,
 	tokenizer: transformers.PreTrainedTokenizer,
-	has_image: bool = False
+	has_image: bool = False,
+	has_object: bool = False
 ) -> Dict:
 	conv = conversation_lib.default_conversation.copy()
 	roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
@@ -429,7 +459,10 @@ def preprocess_v1(
 	# Tokenize conversations
 
 	if has_image:
-		input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+		if has_object:
+			input_ids = torch.stack([tokenizer_image_object_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+		else:
+			input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
 	else:
 		input_ids = tokenizer(
 			conversations,
@@ -461,8 +494,12 @@ def preprocess_v1(
 			parts[0] += sep
 
 			if has_image:
-				round_len = len(tokenizer_image_token(rou, tokenizer))
-				instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
+				if has_object:
+					round_len = len(tokenizer_image_object_token(rou, tokenizer))
+					instruction_len = len(tokenizer_image_object_token(parts[0], tokenizer)) - 2
+				else:
+					round_len = len(tokenizer_image_token(rou, tokenizer))
+					instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
 			else:
 				round_len = len(tokenizer(rou).input_ids)
 				instruction_len = len(tokenizer(parts[0]).input_ids) - 2
@@ -577,7 +614,8 @@ def preprocess_plain(
 def preprocess(
 	sources: Sequence[str],
 	tokenizer: transformers.PreTrainedTokenizer,
-	has_image: bool = False
+	has_image: bool = False,
+	has_object: bool = False,
 ) -> Dict:
 	"""
 	Given a list of sources, each is a conversation list. This transform:
@@ -589,9 +627,9 @@ def preprocess(
 	if conversation_lib.default_conversation.sep_style == conversation_lib.SeparatorStyle.PLAIN:
 		return preprocess_plain(sources, tokenizer)
 	if conversation_lib.default_conversation.sep_style == conversation_lib.SeparatorStyle.LLAMA_2:
-		return preprocess_llama_2(sources, tokenizer, has_image=has_image)
+		return preprocess_llama_2(sources, tokenizer, has_image=has_image, has_object=has_object)
 	if conversation_lib.default_conversation.version.startswith("v1"):
-		return preprocess_v1(sources, tokenizer, has_image=has_image)
+		return preprocess_v1(sources, tokenizer, has_image=has_image, has_object=has_object)
 	if conversation_lib.default_conversation.version == "mpt":
 		return preprocess_mpt(sources, tokenizer)
 	# add end signal and concatenate together
@@ -621,7 +659,6 @@ def preprocess(
 
 	return dict(input_ids=input_ids, labels=targets)
 
-
 class LazySupervisedDataset(Dataset):
 	"""Dataset for supervised fine-tuning."""
 
@@ -629,7 +666,14 @@ class LazySupervisedDataset(Dataset):
 				 tokenizer: transformers.PreTrainedTokenizer,
 				 data_args: DataArguments):
 		super(LazySupervisedDataset, self).__init__()
-		list_data_dict = json.load(open(data_path, "r"))
+		llava_data = json.load(open(os.path.join(data_path, 'llava_instruct_data.json'), "r"))
+		GQA_search_data = json.load(open(os.path.join(data_path, 'GQA_data.json'), "r"))
+		vaw_search_data = json.load(open(os.path.join(data_path, 'vaw_attribute_data.json'), "r"))
+		negative_data = json.load(open(os.path.join(data_path, 'negative_data.json'), "r"))
+		llava_focus_40k = json.load(open(os.path.join(data_path, 'llava_focus_data.json'), "r"))
+		spatial = json.load(open(os.path.join(data_path, 'spatial_relation_data.json'), "r"))
+		spatial = spatial + copy.deepcopy(spatial)
+		list_data_dict =  vaw_search_data + llava_data + GQA_search_data + llava_focus_40k + spatial + negative_data 
 
 		rank0_print("Formatting inputs...Skip in lazy mode")
 		self.tokenizer = tokenizer
@@ -638,7 +682,6 @@ class LazySupervisedDataset(Dataset):
 
 	def __len__(self):
 		return len(self.list_data_dict)
-
 	@property
 	def lengths(self):
 		length_list = []
@@ -655,35 +698,82 @@ class LazySupervisedDataset(Dataset):
 			cur_len = cur_len if 'image' in sample else -cur_len
 			length_list.append(cur_len)
 		return length_list
+	
+	def normalize_bbox(self, bbox, image_width, image_height):
+		normalized_bbox = [bbox[0]/image_width, bbox[1]/image_height, (bbox[0]+bbox[2])/image_width, (bbox[1]+bbox[3])/image_height]
+		normalized_bbox = [np.clip(_, 0, 1) for _ in normalized_bbox]
+		return normalized_bbox
 
 	def __getitem__(self, i) -> Dict[str, torch.Tensor]:
 		sources = self.list_data_dict[i]
 		if isinstance(i, int):
 			sources = [sources]
 		assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
+		crop_size = self.data_args.image_processor.crop_size
+		is_search = False # whether the sample contains target object
 		if 'image' in sources[0]:
 			image_file = self.list_data_dict[i]['image']
 			image_folder = self.data_args.image_folder
 			processor = self.data_args.image_processor
+			is_search = 'search' in sources[0]
+			# indicate using the linear projection (long token sequence) or re-sampler projection (short sequence) for images and targe object crops
+			# always pad to three target objects
+			images_long = 1
+			objects_long = [0, 0, 0]
+			
 			image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
+			object_features = []
+			if is_search:
+				target_instances = sources[0]['target_instances']
+				bbox_list = [instance['bbox'] for instance in target_instances]
+				instance_name_list = [instance['name'] for instance in target_instances]
+				for target_instance in target_instances:
+					bbox = target_instance['bbox']
+					image_width = image.width
+					image_height = image.height
+					# crop a larger bbox to include some context
+					resized_bbox = get_patch(bbox, image_width, image_height, patch_scale=1.2)
+					image_patch = image.crop((resized_bbox[0], resized_bbox[1], resized_bbox[2], resized_bbox[3]))
+					image_patch = image_patch.resize((self.data_args.image_processor.crop_size['width'],self.data_args.image_processor.crop_size['height']))
+					object_features.append(processor.preprocess(image_patch, return_tensors='pt')['pixel_values'][0])
+			# re-sampler projection for image and linear projection for object when there is a single target object 
+			if len(object_features) == 1:
+				objects_long[-1] = 1 
+				images_long = 0
+			while len(object_features) < 3:
+				object_features.insert(0, torch.zeros(3, crop_size['height'], crop_size['width']))
+
 			if self.data_args.image_aspect_ratio == 'pad':
 				def expand2square(pil_img, background_color):
 					width, height = pil_img.size
 					if width == height:
-						return pil_img
+						return pil_img, 0, 0
 					elif width > height:
 						result = Image.new(pil_img.mode, (width, width), background_color)
 						result.paste(pil_img, (0, (width - height) // 2))
-						return result
+						return result, 0, (width - height) // 2
 					else:
 						result = Image.new(pil_img.mode, (height, height), background_color)
 						result.paste(pil_img, ((height - width) // 2, 0))
-						return result
-				image = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
+						return result, (height - width) // 2, 0
+				image, left, top = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
+				if is_search:
+					for bbox in bbox_list:
+						bbox[0] += left
+						bbox[1] += top
+					bbox_list = [self.normalize_bbox(bbox, image.width, image.height) for bbox in bbox_list]
+					object_str_list = []
+					for name, bbox in zip(instance_name_list, bbox_list):
+						object_str_list.append("{} {} at location [{:.3f},{:.3f},{:.3f},{:.3f}]".format(name, DEFAULT_OBJECT_TOKEN, bbox[0], bbox[1], bbox[2], bbox[3]))
 				image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
 			else:
 				image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-			sources = preprocess_multimodal(
+			if is_search:
+				sources = preprocess_multimodal(
+				copy.deepcopy([e["conversations"] for e in sources]),
+				self.data_args, object_str_list=object_str_list)
+			else:
+				sources = preprocess_multimodal(
 				copy.deepcopy([e["conversations"] for e in sources]),
 				self.data_args)
 		else:
@@ -691,17 +781,25 @@ class LazySupervisedDataset(Dataset):
 		data_dict = preprocess(
 			sources,
 			self.tokenizer,
-			has_image=('image' in self.list_data_dict[i]))
+			has_image=('image' in self.list_data_dict[i]),
+			has_object = is_search)
 		if isinstance(i, int):
 			data_dict = dict(input_ids=data_dict["input_ids"][0],
 							 labels=data_dict["labels"][0])
 
+		if 'image' in self.list_data_dict[i]:
+			data_dict['object_features'] = object_features
+			data_dict['images_long'] = images_long
+			data_dict['objects_long'] = objects_long
+		elif self.data_args.is_multimodal:
+			data_dict['object_features'] = [torch.zeros(3, crop_size['height'], crop_size['width'])]*3
+			data_dict['images_long'] = 1
+			data_dict['objects_long'] = [0, 0, 0]
 		# image exist in the data
 		if 'image' in self.list_data_dict[i]:
 			data_dict['image'] = image
 		elif self.data_args.is_multimodal:
 			# image does not exist in the data, but the model is multimodal
-			crop_size = self.data_args.image_processor.crop_size
 			data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
 		return data_dict
 
@@ -715,6 +813,30 @@ class DataCollatorForSupervisedDataset(object):
 	def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
 		input_ids, labels = tuple([instance[key] for instance in instances]
 								  for key in ("input_ids", "labels"))
+		pad_image_list = []
+		pad_object_lens = []
+		object_padded_input_ids = []
+		object_padded_labels = []
+		for i, (input_id, label) in enumerate(zip(input_ids, labels)):
+			pad_object_len = 0
+			if (input_id == IMAGE_TOKEN_INDEX).sum() == 0:
+				input_id = torch.cat([input_id[0:1], torch.tensor([IMAGE_TOKEN_INDEX]*1, dtype=torch.long), input_id[1:]], 0)
+				label = torch.cat([label[0:1], torch.tensor([IGNORE_INDEX]*1, dtype=torch.long), label[1:]], 0)
+				pad_image_list.append(True)
+			else:
+				pad_image_list.append(False)
+			image_token_pos = torch.where(input_id == IMAGE_TOKEN_INDEX)[0]
+			count = torch.sum(input_id==OBJECT_TOKEN_INDEX).item()
+			if (input_id == IMAGE_TOKEN_INDEX).sum() > 0:
+				if count < 3:
+					pad_object_len = 3-count
+					input_id = torch.cat([input_id[:image_token_pos+1], torch.tensor([OBJECT_TOKEN_INDEX]*pad_object_len, dtype=torch.long), input_id[image_token_pos+1:]], 0)
+					label = torch.cat([label[:image_token_pos+1], torch.tensor([IGNORE_INDEX]*pad_object_len, dtype=torch.long), label[image_token_pos+1:]], 0)
+			pad_object_lens.append((image_token_pos, pad_object_len))
+			object_padded_input_ids.append(input_id)
+			object_padded_labels.append(label)
+		input_ids = object_padded_input_ids
+		labels = object_padded_labels
 		input_ids = torch.nn.utils.rnn.pad_sequence(
 			input_ids,
 			batch_first=True,
@@ -730,6 +852,14 @@ class DataCollatorForSupervisedDataset(object):
 			attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
 		)
 
+		for i, pad_image in enumerate(pad_image_list):
+			if pad_image:
+				batch['attention_mask'][i, 1] = False
+
+		for i, (image_token_pos, pad_object_len) in enumerate(pad_object_lens):
+			if pad_object_len > 0:
+				batch['attention_mask'][i, image_token_pos+1:image_token_pos+1+pad_object_len] = False
+
 		if 'image' in instances[0]:
 			images = [instance['image'] for instance in instances]
 			if all(x is not None and x.shape == images[0].shape for x in images):
@@ -737,6 +867,17 @@ class DataCollatorForSupervisedDataset(object):
 			else:
 				batch['images'] = images
 
+			images_long = [instance['images_long'] for instance in instances]
+			batch['images_long'] = torch.tensor(images_long).view(-1, 1).to(torch.bool)
+			objects_long = [instance['objects_long'] for instance in instances]
+			batch['objects_long'] = torch.tensor(objects_long).view(-1, 1).to(torch.bool)
+			object_features = []
+			for instance in instances:
+				object_features.extend(instance['object_features'])
+			if len(object_features) > 0:
+				batch['object_features'] = torch.stack(object_features)
+			else:
+				batch['object_features'] = object_features
 		return batch
 
 
@@ -790,7 +931,7 @@ def train():
 				**bnb_model_from_pretrained_args
 			)
 		else:
-			model = LlavaLlamaForCausalLM.from_pretrained(
+			model = LlavaSearchLlamaForCausalLM.from_pretrained(
 				model_args.model_name_or_path,
 				cache_dir=training_args.cache_dir,
 				**bnb_model_from_pretrained_args
@@ -876,7 +1017,7 @@ def train():
 		)
 		
 		vision_tower = model.get_vision_tower()
-		vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
+		vision_tower.to(dtype=torch.float16, device=training_args.device)
 
 		data_args.image_processor = vision_tower.image_processor
 		data_args.is_multimodal = True
@@ -899,6 +1040,7 @@ def train():
 			model.get_model().mm_projector.to(dtype=compute_dtype, device=training_args.device)
 
 		model.config.mm_use_im_start_end = data_args.mm_use_im_start_end = model_args.mm_use_im_start_end
+		model.config.mm_projector_lr = training_args.mm_projector_lr
 		training_args.use_im_start_end = model_args.mm_use_im_start_end
 		model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
 		model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)

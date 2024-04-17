@@ -820,22 +820,18 @@ def train():
 			model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
 	if training_args.lora_enable:
-		from peft import LoraConfig, get_peft_model
-		lora_config = LoraConfig(
-			r=training_args.lora_r,
-			lora_alpha=training_args.lora_alpha,
-			target_modules=find_all_linear_names(model),
-			lora_dropout=training_args.lora_dropout,
-			bias=training_args.lora_bias,
-			task_type="CAUSAL_LM",
-		)
+		from pyreft import ReftConfig, get_reft_model, ConsreftIntervention
+		reft_config = ReftConfig(representations={
+    		"component": f"model.layers[15].output", # string access to the model component
+    		"intervention": ConsreftIntervention(
+    			embed_dim=model.config.hidden_size, low_rank_dimension=1)})
 		if training_args.bits == 16:
 			if training_args.bf16:
 				model.to(torch.bfloat16)
 			if training_args.fp16:
 				model.to(torch.float16)
-		rank0_print("Adding LoRA adapters...")
-		model = get_peft_model(model, lora_config)
+		rank0_print("Adding ReFT adapters...")
+		model = get_reft_model(model, reft_config)
 
 	if 'mpt' in model_args.model_name_or_path:
 		tokenizer = transformers.AutoTokenizer.from_pretrained(

@@ -3,6 +3,10 @@ import logging
 import logging.handlers
 import os
 import sys
+from PIL import Image
+from io import BytesIO
+import base64
+import numpy as np
 
 import requests
 
@@ -13,6 +17,8 @@ moderation_msg = "YOUR INPUT VIOLATES OUR CONTENT MODERATION GUIDELINES. PLEASE 
 
 handler = None
 
+def load_image_from_base64(image):
+    return Image.open(BytesIO(base64.b64decode(image)))
 
 def build_logger(logger_name, logger_filename):
     global handler
@@ -47,7 +53,7 @@ def build_logger(logger_name, logger_filename):
         os.makedirs(LOGDIR, exist_ok=True)
         filename = os.path.join(LOGDIR, logger_filename)
         handler = logging.handlers.TimedRotatingFileHandler(
-            filename, when='D', utc=True, encoding='UTF-8')
+            filename, when='D', utc=True)
         handler.setFormatter(formatter)
 
         for name, item in logging.root.manager.loggerDict.items():
@@ -124,3 +130,25 @@ def pretty_print_semaphore(semaphore):
     if semaphore is None:
         return "None"
     return f"Semaphore(value={semaphore._value}, locked={semaphore.locked()})"
+
+def get_patch(bbox, image_width, image_height, patch_size=224, patch_scale=None):
+	object_width = int(np.ceil(bbox[2]))
+	object_height = int(np.ceil(bbox[3]))
+
+	object_center_x = int(bbox[0] + bbox[2]/2)
+	object_center_y = int(bbox[1] + bbox[3]/2)
+
+	if patch_scale is None:
+		patch_width = max(object_width, patch_size)
+		patch_height = max(object_height, patch_size)
+	else:
+		patch_width = int(object_width*patch_scale)
+		patch_height = int(object_height*patch_scale)
+
+	left = max(0, object_center_x-patch_width//2)
+	right = min(left+patch_width, image_width)
+
+	top = max(0, object_center_y-patch_height//2)
+	bottom = min(top+patch_height, image_height)
+
+	return [left, top, right, bottom]
